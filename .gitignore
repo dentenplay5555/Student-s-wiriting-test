@@ -1,0 +1,5 @@
+node_modules/
+prism.db
+prism.db-wal
+prism.db-shm
+config.js
