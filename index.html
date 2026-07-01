@@ -852,6 +852,13 @@ var supabaseClient = (window.SUPABASE_URL && window.SUPABASE_ANON_KEY && window.
   ? window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY)
   : null;
 
+/* ===== Auto-save progress to localStorage (survives refresh) ===== */
+var STORAGE_KEY="prism_alaska_v1";
+var pendingRestore=null;
+var saveTimer=null;
+try{var _raw=localStorage.getItem(STORAGE_KEY);if(_raw)pendingRestore=JSON.parse(_raw)}catch(e){}
+var mcqSolvedRestore=(pendingRestore&&pendingRestore.mcqSolved)||{};
+
 var STOPS=[["①","Task","โจทย์"],["②","Sort","จัดกลุ่ม"],["③","Stance","ทัศนะ"],["④","Model","ตัวอย่าง"],["⑤","Warm-up","อุ่นเครื่อง"],["⑥","Write","เขียน"],["⑦","Review","ทบทวน"]];
 var HUBINFO=[
   {t:"Your task + analysis",d:"Read the task, find two views, learn the shape. / อ่านโจทย์ หาสองมุมมอง",time:"~9 min",stars:1,rank:"Explorer / นักสำรวจ"},
@@ -950,7 +957,7 @@ function panelComplete(i){
 function markDone(){
   if(current===null||done[current])return true;
   if(!panelComplete(current))return false;
-  done[current]=true;renderProgress();showBadge(current);return true;
+  done[current]=true;renderProgress();showBadge(current);scheduleSave();return true;
 }
 
 function go(n){
@@ -968,14 +975,22 @@ function go(n){
   document.getElementById("progwrap").style.display="block";
   document.querySelectorAll(".stop").forEach(function(s,i){s.classList.toggle("active",i===n);s.classList.toggle("done",done[i]);s.style.opacity=(unlocked(i)||done[i])?"1":"0.4"});
   if(n===6)renderEssay();
-  window.scrollTo({top:0,behavior:"smooth"})}
+  window.scrollTo({top:0,behavior:"smooth"});
+  scheduleSave()}
 
 var mcqProgress={}; // id -> {total, correct}
-function buildMCQ(id,items){var c=document.getElementById(id);mcqProgress[id]={total:items.length,correct:0};items.forEach(function(it){
+function buildMCQ(id,items){var c=document.getElementById(id);mcqProgress[id]={total:items.length,correct:0};
+  var restored=mcqSolvedRestore[id]||[];
+  items.forEach(function(it,qi){
   var ex=document.createElement("div");ex.className="ex";
   var opts=it.o.map(function(o,j){return '<button class="opt" data-j="'+j+'">'+o+'</button>'}).join('');
   ex.innerHTML='<div class="qline">'+it.q+(it.qth?'<br><span class="qth">'+it.qth+'</span>':'')+'</div><div class="opts">'+opts+'</div><div class="fb"></div>';
   var solved=false;
+  if(restored.indexOf(qi)>=0){
+    solved=true;mcqProgress[id].correct++;
+    ex.querySelectorAll(".opt").forEach(function(o){var oj=+o.dataset.j;o.classList.add("locked");if(oj===it.a)o.classList.add("correct")});
+    var fb0=ex.querySelector(".fb");fb0.className="fb show good";fb0.innerHTML="Correct! "+it.why;
+  }
   ex.querySelectorAll(".opt").forEach(function(btn){btn.onclick=function(){if(solved)return;var j=+btn.dataset.j;var right=(j===it.a);
     var fb=ex.querySelector(".fb");
     if(right){
@@ -983,6 +998,7 @@ function buildMCQ(id,items){var c=document.getElementById(id);mcqProgress[id]={t
       ex.querySelectorAll(".opt").forEach(function(o){var oj=+o.dataset.j;o.classList.add("locked");if(oj===it.a)o.classList.add("correct")});
       fb.className="fb show good";fb.innerHTML="Correct! "+it.why;
       if((id==="p3q"||id==="p3qB")&&typeof checkStance==="function")checkStance();
+      scheduleSave();
     }else{
       // wrong: show feedback, mark this option, but allow retry
       btn.classList.add("wrong");
@@ -1006,9 +1022,9 @@ function taRender(){var pool=document.getElementById("taPool");pool.innerHTML=""
   ["V1","V2"].forEach(function(side){var c=document.getElementById("ta"+side+"-items");c.innerHTML="";
     TA.filter(function(it){return taPlace[it.id]===side}).forEach(function(it){var ok=it.side===side;
       var d=document.createElement("div");d.className="placed "+(ok?"ok":"no");d.textContent=(ok?"✓ ":"✗ ")+it.t;
-      d.onclick=function(e){e.stopPropagation();delete taPlace[it.id];taRender()};c.appendChild(d)})})}
+      d.onclick=function(e){e.stopPropagation();delete taPlace[it.id];taRender();scheduleSave()};c.appendChild(d)})})}
 function taArm(){["V1","V2"].forEach(function(s){document.getElementById("ta"+s).classList.toggle("armed",!!taSel)})}
-function taDrop(side){if(!taSel)return;taPlace[taSel]=side;taSel=null;taArm();taRender()}
+function taDrop(side){if(!taSel)return;taPlace[taSel]=side;taSel=null;taArm();taRender();scheduleSave()}
 taRender();
 
 // ===== TASK chatbot "น้องโพลาร์" (Socratic, scripted decision-tree) =====
@@ -1063,7 +1079,7 @@ function renderChat(){
     foot.innerHTML="";
     cur.opts.forEach(function(o,i){
       var btn=document.createElement("button");btn.className="cbtn";btn.textContent=o.t;
-      btn.onclick=function(){cur.chosen=o.t;botStep++;renderChat();setTimeout(scrollChat,30)};
+      btn.onclick=function(){cur.chosen=o.t;botStep++;renderChat();setTimeout(scrollChat,30);scheduleSave()};
       foot.appendChild(btn);
     });
   }
@@ -1076,7 +1092,7 @@ function submitStance(){
   botStance=v;botStep++;taskBotDone=true;
   // เด้งไปเติมใน Write (Part 4 My Opinion) อัตโนมัติ
   try{ if(typeof boxVals==="object"){ boxVals.op=v; var ta=document.querySelector('[data-key="op"]'); if(ta)ta.value=v; } }catch(e){}
-  renderChat();
+  renderChat();scheduleSave();
 }
 function renderChatDone(){
   var foot=document.getElementById("chatfoot");
@@ -1140,9 +1156,9 @@ function renderPool(){var pool=document.getElementById("pool");pool.innerHTML=""
 function renderBins(){["V1","V2","OP"].forEach(function(side){var c=document.getElementById("bin"+side+"-items");c.innerHTML="";
   SORT.filter(function(it){return place[it.id]===side}).forEach(function(it){var ok=it.side===side;
     var d=document.createElement("div");d.className="placed "+(ok?"ok":"no");d.textContent=(ok?"✓ ":"✗ ")+it.t;
-    d.onclick=function(e){e.stopPropagation();delete place[it.id];renderPool()};c.appendChild(d)})})}
+    d.onclick=function(e){e.stopPropagation();delete place[it.id];renderPool();scheduleSave()};c.appendChild(d)})})}
 function arm(){["V1","V2","OP"].forEach(function(s){document.getElementById("bin"+s).classList.toggle("armed",!!selId)})}
-function drop(side){if(!selId)return;place[selId]=side;selId=null;arm();renderPool()}
+function drop(side){if(!selId)return;place[selId]=side;selId=null;arm();renderPool();scheduleSave()}
 function checkSort1(){
   var allPlaced=SORT.every(function(it){return place[it.id]});
   var allRight=SORT.every(function(it){return place[it.id]===it.side});
@@ -1181,7 +1197,7 @@ function renderMatch(){
       else{ // wrong pair flash
         b.classList.add("wrong");setTimeout(function(){b.classList.remove("wrong")},700);matchSel=null;
       }
-      renderMatch();checkMatch();
+      renderMatch();checkMatch();scheduleSave();
     };
     ec.appendChild(b);
   });
@@ -1211,7 +1227,7 @@ function renderOrder(){
     var placed=orderPlaced[i];
     if(placed){var ok=placed.n===(i+1);slot.className="orderslot filled "+(ok?"ok":"no");
       slot.innerHTML='<span class="oslotn">'+(i+1)+'</span>'+(ok?"✓ ":"✗ ")+placed.t;
-      slot.onclick=(function(idx){return function(){orderPlaced.splice(idx,1);renderOrder()}})(i);
+      slot.onclick=(function(idx){return function(){orderPlaced.splice(idx,1);renderOrder();scheduleSave()}})(i);
     }else{slot.innerHTML='<span class="oslotn">'+(i+1)+'</span><span class="oslotempty">แตะประโยคด้านล่าง...</span>';}
     slots.appendChild(slot);
   }
@@ -1220,12 +1236,12 @@ function renderOrder(){
     if(used.indexOf(o.n)>=0)return;
     var b=document.createElement("button");b.className="orderchip";
     b.innerHTML=o.t+'<span class="ith">'+o.tth+'</span>';
-    b.onclick=function(){if(orderPlaced.length<5){orderPlaced.push(o);renderOrder()}};
+    b.onclick=function(){if(orderPlaced.length<5){orderPlaced.push(o);renderOrder();scheduleSave()}};
     pool.appendChild(b);
   });
   checkOrder();
 }
-function resetOrder(){orderPlaced=[];renderOrder()}
+function resetOrder(){orderPlaced=[];renderOrder();scheduleSave()}
 function checkOrder(){
   var st=document.getElementById("sortStat2");
   if(orderPlaced.length<5){st.className="exstatus";st.innerHTML="";sortDone[2]=false;return;}
@@ -1318,9 +1334,9 @@ WB.forEach(function(b){
 });
 var boxVals={topic:"",v1:"",v2:"",op:"",close:""};
 wb.addEventListener("input",function(e){if(e.target.tagName==="TEXTAREA"){var k=e.target.dataset.key;boxVals[k]=e.target.value;
-  var n=e.target.value.trim()?e.target.value.trim().split(/\s+/).length:0;var st=document.getElementById("st-"+k);st.textContent=n+" words";st.classList.toggle("ok",n>=4)}});
+  var n=e.target.value.trim()?e.target.value.trim().split(/\s+/).length:0;var st=document.getElementById("st-"+k);st.textContent=n+" words";st.classList.toggle("ok",n>=4);scheduleSave()}});
 function insBox(k,t){var ta=wb.querySelector('textarea[data-key="'+k+'"]');ta.value=(ta.value||"")+t;boxVals[k]=ta.value;ta.focus();
-  var n=ta.value.trim()?ta.value.trim().split(/\s+/).length:0;var st=document.getElementById("st-"+k);st.textContent=n+" words";st.classList.toggle("ok",n>=4)}
+  var n=ta.value.trim()?ta.value.trim().split(/\s+/).length:0;var st=document.getElementById("st-"+k);st.textContent=n+" words";st.classList.toggle("ok",n>=4);scheduleSave()}
 function assemble(){var parts=[boxVals.topic,boxVals.v1,boxVals.v2,boxVals.op,boxVals.close].map(function(x){return x.trim()}).filter(Boolean);
   var full=parts.join(" ");
   var d1=document.getElementById("draft1");if(d1){d1.value=full;}
@@ -1406,6 +1422,7 @@ function warmCheck(sel){
   if(sel.value==="-1"){mark.textContent="";return;}
   if(correct){sel.classList.add("ok");mark.textContent="✅";}
   else{sel.classList.add("no");mark.textContent="❌";}
+  scheduleSave();
 }
 function warmAllCorrect(){
   var sels=warmEl.querySelectorAll(".wusel");
@@ -1528,7 +1545,7 @@ function flash(b,m){var o=b.textContent;b.textContent=m;b.classList.add("done");
       st.innerHTML=n>0?("⚡ สู้ต่อ! พลังสมอง "+n+"/3 — ติ๊กให้ครบเพื่อล้ม AI ตัวร้าย!"):"";
     }
   }
-  chks.forEach(function(c){c.addEventListener("change",upd)});
+  chks.forEach(function(c){c.addEventListener("change",function(){upd();scheduleSave()})});
   upd();
 })();
 
@@ -1557,6 +1574,7 @@ psRows.querySelectorAll(".psbtn").forEach(function(b){b.onclick=function(){
     var on=+x.dataset.v===v;x.classList.toggle("on",on);if(on)x.style.background=DIMS.find(function(d){return d.code===code}).color;else x.style.background=""});
   var tot=psScores.TR+psScores.CC+psScores.LR+psScores.GRA+psScores.ME;
   document.getElementById("psTotal").textContent=tot;
+  scheduleSave();
 }});
 // ===== Diagnostic Report (student-facing) : psScores -> 9 binary -> K=14 state =====
 // K=14 model (revised, p=.073). skills a=TR b=CC c=LR d=GRA e=ME
@@ -1782,6 +1800,140 @@ function submitSubmission(){
     btn.textContent="🚀 ส่งงาน / Submit";
   });
 }
+
+function getMcqSolved(id){
+  var arr=[];
+  document.querySelectorAll("#"+id+" .ex").forEach(function(ex,i){
+    if(ex.querySelector(".opt.correct"))arr.push(i);
+  });
+  return arr;
+}
+
+function collectSaveState(){
+  var warm=[];
+  if(typeof warmEl!=="undefined"&&warmEl){
+    Array.prototype.forEach.call(warmEl.querySelectorAll(".wusel"),function(s){
+      warm.push({pi:s.dataset.pi,di:s.dataset.di,v:s.value});
+    });
+  }
+  return{
+    v:1,
+    done:done.slice(),
+    current:current,
+    fields:{
+      stuName:val("stuName"),stuClass:val("stuClass"),stuNo:val("stuNo"),stuEmail:val("stuEmail"),
+      draft1:val("draft1"),draft2:val("draft2"),draft3:val("draft3"),
+      aiRecord:val("aiRecord"),aiCritique:val("aiCritique"),refl1:val("refl1"),refl2:val("refl2")
+    },
+    boxVals:Object.assign({},boxVals),
+    psScores:Object.assign({},psScores),
+    thinkchk:chkBits(".thinkchk"),
+    selfchk:chkBits(".selfchk"),
+    botStep:botStep,botStance:botStance,taskBotDone:taskBotDone,
+    botChosen:BOT_SCRIPT.map(function(n){return n.chosen||null}),
+    taPlace:Object.assign({},taPlace),
+    place:Object.assign({},place),
+    matched:Object.assign({},matched),
+    orderNs:orderPlaced.map(function(o){return o.n}),
+    sortDone:sortDone.slice(),
+    modelSeen:Object.assign({},modelSeen),
+    warm:warm,
+    mcqSolved:{p3q:getMcqSolved("p3q"),p3qB:getMcqSolved("p3qB")},
+    prismResult:window.PRISM_RESULT||null
+  };
+}
+
+function saveProgress(){
+  try{localStorage.setItem(STORAGE_KEY,JSON.stringify(collectSaveState()))}catch(e){}
+}
+
+function scheduleSave(){
+  if(saveTimer)clearTimeout(saveTimer);
+  saveTimer=setTimeout(saveProgress,350);
+}
+
+function setField(id,v){
+  var el=document.getElementById(id);
+  if(el&&v!=null)el.value=v;
+}
+
+function restorePsUI(){
+  DIMS.forEach(function(d){
+    var v=psScores[d.code];
+    if(!v)return;
+    psRows.querySelectorAll('.psbtn[data-code="'+d.code+'"]').forEach(function(x){
+      var on=+x.dataset.v===v;
+      x.classList.toggle("on",on);
+      x.style.background=on?d.color:"";
+    });
+  });
+  var pt=document.getElementById("psTotal");
+  if(pt)pt.textContent=psScores.TR+psScores.CC+psScores.LR+psScores.GRA+psScores.ME;
+}
+
+function setChkBits(sel,bits){
+  document.querySelectorAll(sel).forEach(function(c,i){c.checked=!!(bits&&bits[i])});
+}
+
+function loadProgress(){
+  var s=pendingRestore;
+  if(!s||s.v!==1)return;
+  if(s.done&&s.done.length===7)done=s.done.slice();
+  if(s.fields)Object.keys(s.fields).forEach(function(k){setField(k,s.fields[k])});
+  if(s.boxVals){
+    Object.assign(boxVals,s.boxVals);
+    Object.keys(boxVals).forEach(function(k){
+      var ta=wb.querySelector('textarea[data-key="'+k+'"]');
+      if(!ta)return;
+      ta.value=boxVals[k];
+      var n=boxVals[k].trim()?boxVals[k].trim().split(/\s+/).length:0;
+      var st=document.getElementById("st-"+k);
+      if(st){st.textContent=n+" words";st.classList.toggle("ok",n>=4)}
+    });
+  }
+  if(s.psScores)Object.assign(psScores,s.psScores);
+  if(s.thinkchk)setChkBits(".thinkchk",s.thinkchk);
+  if(s.selfchk)setChkBits(".selfchk",s.selfchk);
+  if(s.botStance!=null)botStance=s.botStance;
+  if(s.botStep!=null)botStep=s.botStep;
+  if(s.taskBotDone)taskBotDone=!!s.taskBotDone;
+  if(s.botChosen)s.botChosen.forEach(function(ch,i){if(BOT_SCRIPT[i]&&ch)BOT_SCRIPT[i].chosen=ch});
+  if(s.taPlace)taPlace=Object.assign({},s.taPlace);
+  if(s.place)place=Object.assign({},s.place);
+  if(s.matched)matched=Object.assign({},s.matched);
+  if(s.orderNs)orderPlaced=s.orderNs.map(function(n){return ORDER.find(function(o){return o.n===n})}).filter(Boolean);
+  if(s.sortDone)sortDone=s.sortDone.slice();
+  if(s.modelSeen)modelSeen=Object.assign({},s.modelSeen);
+  if(s.prismResult)window.PRISM_RESULT=s.prismResult;
+
+  taRender();
+  renderPool();
+  renderMatch();
+  renderOrder();
+  renderChat();
+  if(s.warm)s.warm.forEach(function(w){
+    var sel=warmEl.querySelector('.wusel[data-pi="'+w.pi+'"][data-di="'+w.di+'"]');
+    if(sel&&w.v!=null){sel.value=w.v;warmCheck(sel)}
+  });
+  restorePsUI();
+  cwUpd(2);cwUpd(3);
+  renderProgress();
+  renderHub();
+  if(typeof checkStance==="function")checkStance();
+  document.querySelectorAll(".thinkchk").forEach(function(c){c.dispatchEvent(new Event("change"))});
+  if(s.prismResult)try{buildReport()}catch(e){}
+
+  var dest=s.current;
+  if(dest==="hub"||dest==null)go("hub");
+  else if(typeof dest==="number"&&dest>=0&&dest<7)go(dest);
+
+  pendingRestore=null;
+}
+
+document.addEventListener("input",function(e){if(e.target.closest&&e.target.closest(".app"))scheduleSave()},true);
+document.addEventListener("change",function(e){if(e.target.closest&&e.target.closest(".app"))scheduleSave()},true);
+
+loadProgress();
 </script>
 </body>
 </html>
