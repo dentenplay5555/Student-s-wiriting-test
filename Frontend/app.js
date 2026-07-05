@@ -943,7 +943,6 @@ function submitSubmission(){
   btn.textContent="⏳ กำลังส่ง... / Sending...";
   note.className="submitnote";
   note.innerHTML="";
-
   // 1. Get JWT from Worker /auth using student's email
   fetch(workerUrl.replace(/\/$/, "") + "/auth", {
     method: "POST",
@@ -974,7 +973,15 @@ function submitSubmission(){
     if(!submitRes.ok){
       return submitRes.json().then(function(err){ throw new Error(err.error || "Submission failed") });
     }
-    return submitRes.json();
+    return submitRes.text().then(function(text) {
+      console.log("Worker response:", text);
+
+      try {
+          return JSON.parse(text);
+      } catch {
+          throw new Error(text);
+      }
+    });
   })
   .then(function(res){
     note.className="submitnote ok";

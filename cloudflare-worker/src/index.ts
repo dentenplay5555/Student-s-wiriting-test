@@ -1,131 +1,228 @@
-import { Hono } from 'hono'
-import { cors } from 'hono/cors'
-import { logger } from 'hono/logger'
-import { jwt, sign } from 'hono/jwt'
+import { Hono } from "hono";
+import { cors } from "hono/cors";
+import { logger } from "hono/logger";
+import { jwt, sign } from "hono/jwt";
 
-// Environment bindings interface
 export interface Env {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_ROLE_KEY: string;
   JWT_SECRET: string;
 }
 
-const app = new Hono<{ Bindings: Env }>()
+const app = new Hono<{ Bindings: Env }>();
 
+// --------------------
 // Global Middleware
-app.use('*', cors())
-app.use('*', logger())
+// --------------------
+app.use(
+  "*",
+  cors({
+    origin: [
+      "https://dentenplay5555.github.io"
+    ]
+  })
+);
+app.use("*", logger());
 
-// Simple In-Memory Rate Limiter (per Cloudflare Worker isolate)
-const rateLimitMap = new Map<string, { count: number; resetTime: number }>()
+// --------------------
+// Health Check
+// --------------------
+app.get("/test", (c) => {
+  return c.json({
+    ok: true,
+    message: "Worker is running!"
+  });
+});
 
-const rateLimiter = (limit: number, windowMs: number) => {
+// --------------------
+// Simple In-Memory Rate Limiter
+// --------------------
+const rateLimitMap = new Map<
+  string,
+  {
+    count: number;
+    resetTime: number;
+  }
+>();
+
+function rateLimiter(limit: number, windowMs: number) {
   return async (c: any, next: any) => {
-    const clientIP = c.req.header('CF-Connecting-IP') || 'anonymous'
-    const now = Date.now()
+    const ip =
+      c.req.header("CF-Connecting-IP") ??
+      c.req.header("x-forwarded-for") ??
+      "anonymous";
 
-    let record = rateLimitMap.get(clientIP)
+    const now = Date.now();
+
+    let record = rateLimitMap.get(ip);
+
     if (!record || now > record.resetTime) {
-      record = { count: 0, resetTime: now + windowMs }
+      record = {
+        count: 0,
+        resetTime: now + windowMs,
+      };
     }
 
-    record.count++
-    rateLimitMap.set(clientIP, record)
+    record.count++;
+
+    rateLimitMap.set(ip, record);
 
     if (record.count > limit) {
-      return c.json({ error: 'Too many requests. Please try again later.' }, 429)
+      return c.json(
+        {
+          error: "Too many requests"
+        },
+        429
+      );
     }
-    await next()
-  }
+
+    return await next();
+  };
 }
 
-// Authentication Endpoint: Issue JWT token containing student's email
-app.post('/auth', rateLimiter(10, 60 * 1000), async (c) => {
-  try {
-    const { email } = await c.req.json()
-    if (!email || !email.includes('@')) {
-      return c.json({ error: 'Invalid email address.' }, 400)
-    }
-
-    const payload = {
-      email: email.trim().toLowerCase(),
-      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24, // 24 hours expiration
-    }
-
-    const token = await sign(payload, c.env.JWT_SECRET)
-    return c.json({ token })
-  } catch (err: any) {
-    return c.json({ error: 'Authentication failed: ' + err.message }, 500)
-  }
-})
-
-// Submission Endpoint: Validate JWT and proxy to Supabase
+// --------------------
+// AUTH
+// --------------------
 app.post(
-  '/submit',
-  rateLimiter(5, 60 * 1000),
-  async (c, next) => {
-    // JWT verification middleware
-    return jwt({ secret: c.env.JWT_SECRET })(c, next)
-  },
+  "/auth",
+  rateLimiter(10, 60 * 1000),
   async (c) => {
     try {
-      const payload = c.get('jwtPayload')
-      const emailFromJwt = payload.email
+      console.log("1");
+      const body = await c.req.json();
+      console.log("2");
+      const email = String(body.email ?? "")
+        .trim()
+        .toLowerCase();
 
-      const data: any = await c.req.json()
-
-      // 1. Validate Email alignment
-      if (!data.student_email || data.student_email.trim().toLowerCase() !== emailFromJwt) {
-        return c.json({ error: 'Unauthorized: Student email does not match token.' }, 401)
+      if (!email) {
+        return c.json(
+          {
+            error: "Email required"
+          },
+          400
+        );
       }
 
-      // 2. Schema Validation
-      if (!data.student_name || !data.student_class || !data.student_no) {
-        return c.json({ error: 'Validation failed: Student profile info is incomplete.' }, 400)
-      }
-      if (!data.draft_first || !data.draft_second || !data.draft_final) {
-        return c.json({ error: 'Validation failed: Draft content is incomplete.' }, 400)
-      }
-      if (!data.ai_feedback_record) {
-        return c.json({ error: 'Validation failed: AI feedback record is missing.' }, 400)
+      if (!email.includes("@")) {
+        return c.json(
+          {
+            error: "Invalid email"
+          },
+          400
+        );
       }
 
-      // Validate practice scores (TR, CC, LR, GRA, ME) bounds
-      const scores = ['practice_tr', 'practice_cc', 'practice_lr', 'practice_gra', 'practice_me']
-      for (const key of scores) {
-        const val = data[key]
-        if (typeof val !== 'number' || val < 1 || val > 5) {
-          return c.json({ error: `Validation failed: Score ${key} must be a number between 1 and 5.` }, 400)
-        }
-      }
-
-      console.log(`Forwarding submission to Supabase for student: ${data.student_email}`)
-
-      // 3. Post to Supabase REST endpoint
-      const targetUrl = `${c.env.SUPABASE_URL.replace(/\/$/, '')}/rest/v1/submissions`
-      const response = await fetch(targetUrl, {
-        method: 'POST',
-        headers: {
-          'apikey': c.env.SUPABASE_SERVICE_ROLE_KEY,
-          'Authorization': `Bearer ${c.env.SUPABASE_SERVICE_ROLE_KEY}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
+      const token = await sign(
+        {
+          email,
+          exp: Math.floor(Date.now() / 1000) + 60 * 60 * 24,
         },
-        body: JSON.stringify(data)
-      })
-
-      if (!response.ok) {
-        const errText = await response.text()
-        console.error('Supabase integration error:', errText)
-        return c.json({ error: 'Failed to write submission to Supabase.' }, 502)
-      }
-
-      return c.json({ success: true, message: 'Submission saved successfully!' })
+        c.env.JWT_SECRET
+      );
+      console.log("3");
+      return c.json({
+        success: true,
+        token,
+      });
     } catch (err: any) {
-      console.error('Submission handling failed:', err)
-      return c.json({ error: 'Internal server error: ' + err.message }, 500)
+      console.error("AUTH ERROR", err);
+
+      return c.json(
+        {
+          error: err?.message ?? "Authentication failed",
+        },
+        500
+      );
     }
   }
-)
+);
 
-export default app
+// --------------------
+// SUBMIT
+// --------------------
+app.post(
+  "/submit",
+  rateLimiter(5, 60 * 1000),
+
+  async (c, next) => {
+    console.log("4");
+    return jwt({
+      secret: c.env.JWT_SECRET,
+      alg: "HS256",
+    })(c, next);
+  },
+
+  async (c) => {
+    try {
+      const jwtPayload: any = c.get("jwtPayload");
+
+      const body = await c.req.json();
+
+      const email = String(body.student_email ?? "")
+        .trim()
+        .toLowerCase();
+
+      if (email !== jwtPayload.email) {
+        return c.json(
+          {
+            error: "Email mismatch"
+          },
+          401
+        );
+      }
+
+      const response = await fetch(
+        `${c.env.SUPABASE_URL}/rest/v1/submissions`,
+        {
+          method: "POST",
+          headers: {
+            apikey: c.env.SUPABASE_SERVICE_ROLE_KEY,
+            Authorization:
+              `Bearer ${c.env.SUPABASE_SERVICE_ROLE_KEY}`,
+            "Content-Type": "application/json",
+            Prefer: "return=representation",
+          },
+          body: JSON.stringify(body),
+        }
+      );
+
+      if (!response.ok) {
+        const text = await response.text();
+
+        console.error(text);
+
+        return c.json(
+          {
+            error: text,
+          },
+          500
+        );
+      }
+
+      const result = await response.text();
+
+      return c.json({
+        success: true,
+        data: result,
+      });
+    } catch (err: any) {
+      console.error("SUBMIT ERROR", err);
+
+      return c.json(
+        {
+          error: err?.message ?? "Unknown Error",
+        },
+        500
+      );
+    }
+  }
+);
+app.get("/debug", (c) => {
+  return c.json({
+    hasJwt: !!c.env.JWT_SECRET,
+    hasServiceRole: !!c.env.SUPABASE_SERVICE_ROLE_KEY,
+    hasSupabaseUrl: !!c.env.SUPABASE_URL,
+  });
+});
+export default app;
