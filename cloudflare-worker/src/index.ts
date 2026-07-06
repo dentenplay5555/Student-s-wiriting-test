@@ -17,9 +17,9 @@ const app = new Hono<{ Bindings: Env }>();
 app.use(
   "*",
   cors({
-    origin: [
-      "https://dentenplay5555.github.io"
-    ]
+    origin: "*",
+    allowMethods: ["GET", "POST", "OPTIONS"],
+    allowHeaders: ["Content-Type", "Authorization"],
   })
 );
 app.use("*", logger());
@@ -80,6 +80,13 @@ function rateLimiter(limit: number, windowMs: number) {
   };
 }
 
+app.options("*", (c) => {
+  return c.text("", 204 as any, {
+    "Access-Control-Allow-Origin": "https://dentenplay5555.github.io",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  });
+});
 // --------------------
 // AUTH
 // --------------------
